@@ -13,3 +13,10 @@ Repository that contains code considered during peer-review process.
 - [`generate_rectangle_annotation.groovy`](generate_rectangle_annotation.groovy): Used to create a rectangle annotation at given coordinates. Was used to create images corresponding to centroid plots for the ACC project.
 - [`recalculate_detection_measurements.groovy`](recalculate_detection_measurements.groovy): A convenient script for removing measurements from currently-loaded cell detections and recalculating them. Useful for regenerating summary statistics that can be used to compare two versions of the same image to detect differences (e.g. confirming that pixel values did not change when writing to a new TIFF file).
 - [`qupath_segmentation.sh`](qupath_segmentation.sh): This script was mainly used to conduct marker segmentation and combine detections headlessly.
+
+## Additional Data
+
+> **Note:** These files are excluded from repo but references are included in scripts above.  
+
+- acc_study_info.csv: the CSV used to download the annotations from the DICOM store and create the GeoJSON files that were imported into QuPath.
+- image_to_study_id.txt: a mapping of image names and sample IDs for DICOM annotations. This is hard-coded in [`import_and_measure.groovy`](import_and_measure.groovy). 
