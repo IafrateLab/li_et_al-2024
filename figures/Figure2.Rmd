@@ -1,0 +1,318 @@
+---
+title: "Figure 2"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+max-width: 1600px;
+margin-left: 20px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+# knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+
+library(readxl)
+library(dplyr)
+library(knitr)
+library(ggplot2)
+
+quant_dir <- "quantification/"
+```
+
+```{r}
+type_palette <- c(`Adenoid Cystic Carcinoma - Head & Neck`="#35B7CE", 
+                  `Adenoid Cystic Carcinoma - Breast`="#C6EDF2", 
+                  `Adenoid Cystic Carcinoma - Lung`="#91CCC1",  
+                  `Adenoid Cystic Carcinoma - Metastatic`= "#0888A3", 
+                  `Squamous Cell Carcinoma - Head & Neck`="#414487",
+                  `Basal-Like Carcinoma - Breast`="#932667")
+```             
+
+```{r}
+area_df <- read.csv(paste0(quant_dir, "tumor_area_cell_type_counts.csv"), check.names=FALSE)
+```
+
+```{r}
+gland_df <- read.csv(paste0(quant_dir, "tumor_gland_cell_type_counts.csv"), check.names=FALSE)
+gland_df <- gland_df %>% mutate(perc_ratio_intratumoral_t=100*`T Cell`/Epithelial)
+```
+
+```{r}
+subtype_df <- read.csv(paste0(quant_dir, "tumor_area_cell_subtype_counts.csv"), check.names=FALSE)
+subtype_df$Sample <- subtype_df$new_samp
+```
+
+```{r}
+# Count total T-Helper including CK+ (appear to be valid, just overlapping epithelial cells)
+subtype_df$`Total T-Helper` <- rowSums(subtype_df %>% select(starts_with("T-Helper")))
+
+# Count total T-Regs including CK+
+subtype_df$`Total T-Helper: Regulatory` <- rowSums(subtype_df %>% select(starts_with("T-Helper: Regulatory")))
+
+# Count total cytotoxic Ts including CK+
+subtype_df$`Total Cytotoxic T` <- rowSums(subtype_df %>% select(starts_with("Cytotoxic T")))
+
+# Count total proliferating cytotoxic Ts including CK+
+subtype_df$`Total Cytotoxic T: Proliferating` <- rowSums(subtype_df %>% select(starts_with("Cytotoxic T: Proliferating")))
+
+# Count total epithelial
+subtype_df$`Total Epithelial` <- rowSums(subtype_df %>% select(starts_with("Epithelial")))
+
+subtype_df <- subtype_df %>% mutate(
+  perc_t_reg_tot=100*`Total T-Helper: Regulatory`/`Total Classified`, 
+  perc_t_reg_immune=100*`Total T-Helper: Regulatory`/`Total Immune`, 
+  perc_t_reg_t_helper=100*`Total T-Helper: Regulatory`/`Total T-Helper`,
+  perc_pro_t_cyto_tot_t_cyto=100*`Total Cytotoxic T: Proliferating`/`Total Cytotoxic T`,
+  perc_pro_epi_tot_epi=100*`Epithelial: Proliferating`/`Total Epithelial`)
+```
+
+### Percentage Total Immune Cells Out of Total Cells
+
+#### Tumor Area
+
+```{r, fig.width=14, fig.height=6}
+dat <- area_df
+dat$perc_immune_label <- paste0(round(dat$`Perc Immune`, 1), "%")
+dat$tot_immune_label <- dat$`Total Immune`
+
+ggplot(dat, aes(x=Sample, y=`Perc Immune`, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_immune_label, x=Sample, y=`Perc Immune`+0.8), size=4, color="gray20", fontface="bold") +
+  geom_text(aes(label=tot_immune_label), position=ggpp::position_stacknudge(vjust=0.5, y=0), size=4) +
+  scale_y_continuous(expand=c(0, 1)) +
+  # guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold"),
+        legend.title=element_text(size=16, face="bold")) +
+  labs(y=" \nImmune Cells/Total Cells [%]", x="")
+```
+
+#### Tumor Glands
+
+```{r, fig.width=14, fig.height=6}
+dat <- gland_df
+dat$perc_immune_label <- paste0(round(dat$`Perc Immune`, 1), "%")
+dat$tot_immune_label <- dat$`Total Immune`
+
+ggplot(dat, aes(x=Sample, y=`Perc Immune`, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_immune_label, x=Sample, y=`Perc Immune`+0.6), size=4, color="gray20", fontface="bold") +
+  geom_text(aes(label=tot_immune_label), position=ggpp::position_stacknudge(vjust=0.5, y=0), size=4) +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y="Immune Cells/Total Cells\nwithin Malignant Epithelium [%]", x="")
+```
+
+### Percentage Macrophage/T-Helper/Cytotoxic T/B Cells Out of Total Immune Cells
+
+```{r, fig.width=10, fig.height=9}
+dat <- area_df %>% 
+  tidyr::pivot_longer(c(`Perc B Cell`, `Perc T-Helper`, `Perc Cytotoxic T`, `Perc Macrophage`), 
+                      names_to="Cell Type", values_to="Percent of Total Immune Cells") %>% 
+  mutate(`Cell Type`=case_when(`Cell Type` == "Perc Macrophage" ~ "Macrophage",
+                               `Cell Type` == "Perc T-Helper" ~ "Helper T Cell",
+                               `Cell Type` == "Perc Cytotoxic T" ~ "Cytotoxic T Cell",
+                               `Cell Type` == "Perc B Cell" ~ "B Cell"))
+
+ggplot(dat %>% mutate(Sample=factor(Sample, levels=rev(levels(Sample)))), 
+       aes(x=`Percent of Total Immune Cells`, y=Sample, fill=`Cell Type`)) + 
+  geom_col(alpha=0.75) +
+  scale_fill_manual(values=c(`Helper T Cell`="#FE9F6D", `Cytotoxic T Cell`="#DD513A", 
+                             `Macrophage`="#4BAD9F", `B Cell`="#2F6B8E"),
+                    breaks=c("Macrophage", "Helper T Cell", "Cytotoxic T Cell", "B Cell")) +
+  theme_minimal() +
+  theme(text=element_text(size=18, color="black", face="bold"),
+        axis.text=element_text(size=14), 
+        axis.title.x=element_text(margin=unit(c(4, 0, 0, 0), "mm"), size=14), 
+        legend.text=element_text(size=12, face="plain"),
+        legend.title=element_text(size=14),
+        legend.direction="horizontal", legend.position="top",
+        legend.margin=margin(0, 0, -3, 0)) +
+  scale_x_continuous(expand=c(0, 1.2), n.breaks=20) +
+  labs(x="% of Total Immune Cells", y="")
+```
+
+### Ratio Intratumoral T-Cells To Cancer Cells
+
+```{r, fig.width=14, fig.height=6}
+dat <- gland_df
+dat$perc_ratio_t_label <- paste0(round(dat$perc_ratio_intratumoral_t, 2), "%")
+
+ggplot(dat, aes(x=Sample, y=perc_ratio_intratumoral_t, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.75, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_ratio_t_label, x=Sample, y=perc_ratio_intratumoral_t+0.3), size=3.8, color="gray20", fontface="bold") +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y="T-Cells/Total Cells\nwithin Malignant Epithelium [%]", x="")
+```
+
+### PDL1 Score
+
+```{r}
+pdl1_df <- read.csv(paste0(quant_dir, "tumor_area_PDL1.csv"))
+```
+
+```{r, fig.width=14, fig.height=6}
+dat <- pdl1_df
+dat <- dat %>% tidyr::pivot_longer(c(CPS, TPS), names_to="Score Type", values_to="PDL1 Score")
+dat$CPS_star <- ifelse(dat$`Score Type` == "CPS" & dat$`PDL1 Score` > 1, "*", "")
+dat$TPS_star <- ifelse(dat$`Score Type` == "TPS" & dat$`PDL1 Score` > 1, "*", "")
+dat$label <- ifelse(dat$`PDL1 Score` > 1, paste("*", round(dat$`PDL1 Score`, 2)), "")
+
+ggplot(dat, aes(x=Sample, y=`PDL1 Score`, fill=`Score Type`)) + 
+  geom_col(position=position_dodge2(), width=0.7, alpha=0.75) +
+  scale_fill_manual(values=c(CPS="#9AD8DE", TPS="#388DBA")) +
+  geom_hline(yintercept=1, linetype="dashed", linewidth=1, color="#94221F") +
+  geom_text(aes(label=CPS_star, x=as.integer(Sample) - 0.17, y=`PDL1 Score`+1), size=6, color="black", fontface="bold") +
+  geom_text(aes(label=TPS_star, x=as.integer(Sample) + 0.17, y=`PDL1 Score`+1), size=6, color="black", fontface="bold") +
+  theme_minimal() +
+  guides(fill="none") +
+  theme(text=element_text(size=16, color="black", face="bold"), axis.text=element_text(size=18), 
+        axis.text.x=element_text(angle=60, hjust=1),
+        axis.title.y=element_text(size=18, margin=unit(c(0, 4, 0, 0), "mm"))) +
+  labs(y="PDL1 Score", x="")
+```
+
+___
+# Supplemental Figures
+
+### Percent Ratio Proliferating Cytotoxic T / Total Cytotoxic T
+
+```{r, fig.width=16, fig.height=6}
+dat <- subtype_df
+dat$perc_label <- paste0(round(dat$perc_pro_t_cyto_tot_t_cyto, 1), "%")
+
+ggplot(dat, aes(x=Sample, y=perc_pro_t_cyto_tot_t_cyto, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_label, x=Sample, y=perc_pro_t_cyto_tot_t_cyto+1.7), size=4, color="black", fontface="bold") +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y="Proliferating Cytotoxic T Cells /\nTotal Cytotoxic T Cells [%]", x="")
+```
+
+### Percent Ratio T-Regs / Total Cells
+
+```{r, fig.width=16, fig.height=6}
+dat$perc_label <- paste0(round(dat$perc_t_reg_tot, 1), "%")
+
+ggplot(dat, aes(x=Sample, y=perc_t_reg_tot, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_label, x=Sample, y=perc_t_reg_tot+0.13), size=4, color="black", fontface="bold") +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y=" \nRegulatory T Cells / Total Cells [%]", x="")
+```
+
+### Percent Ratio T-Regs / Total Immune Cells
+
+```{r, fig.width=16, fig.height=6}
+dat$perc_label <- paste0(round(dat$perc_t_reg_immune, 1), "%")
+
+ggplot(dat, aes(x=Sample, y=perc_t_reg_immune, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_label, x=Sample, y=perc_t_reg_immune+0.6), size=4, color="black", fontface="bold") +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y=" \nRegulatory T Cells / Total Immune Cells [%]", x="")
+```
+
+### Percent Ratio T-Regs / Total T-Helper
+
+```{r, fig.width=16, fig.height=6}
+dat$perc_label <- paste0(round(dat$perc_t_reg_t_helper, 1), "%")
+
+ggplot(dat, aes(x=Sample, y=perc_t_reg_t_helper, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_label, x=Sample, y=perc_t_reg_t_helper+1.5), size=4, color="black", fontface="bold") +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y="Regulatory T-Helper Cells /\nTotal T-Helper Cells [%]", x="")
+```
+
+### Percent Proliferating Epithelial Cells / Total Epithelial Cells
+
+```{r, fig.width=16, fig.height=6}
+dat$perc_label <- paste0(round(dat$perc_pro_epi_tot_epi, 1), "%")
+
+ggplot(dat, aes(x=Sample, y=perc_pro_epi_tot_epi, fill=`Cancer Type`)) + 
+  geom_col(alpha=0.7, width=0.95) +
+  scale_fill_manual(values=type_palette) +
+  geom_text(aes(label=perc_label, x=Sample, y=perc_pro_epi_tot_epi+2), size=4, color="black", fontface="bold") +
+  guides(fill="none") +
+  theme_minimal() +
+  theme(text=element_text(size=16, color="black"),
+        axis.text=element_text(size=18, face="bold"),
+        axis.text.x=element_text(angle=60, hjust=1, face="bold"),
+        axis.title.y=element_text(size=16, margin=unit(c(0, 4, 0, 0), "mm"), face="bold")) +
+  labs(y="Proliferating Epithelial Cells /\nTotal Epithelial Cells [%]", x="")
+```
+
+### PDL2 Score
+
+```{r}
+pdl2_df <- read.csv(paste0(quant_dir, "tumor_area_PDL2.csv"))
+
+# PD-L2 data only available for some samples
+pdl2_df <- pdl2_df[!is.na(pdl2_df$CPS),]
+
+pdl2_df$Sample <- factor(pdl2_df$Sample, level=levels(pdl2_df$Sample)[levels(pdl2_df$Sample) %in% pdl2_df$Sample])
+```
+
+```{r, fig.width=16, fig.height=6}
+dat <- pdl2_df
+dat <- dat %>% tidyr::pivot_longer(c(CPS, TPS), names_to="Score Type", values_to="PDL2 Score")
+dat$CPS_star <- ifelse(dat$`Score Type` == "CPS" & dat$`PDL2 Score` > 1, "*", "")
+dat$TPS_star <- ifelse(dat$`Score Type` == "TPS" & dat$`PDL2 Score` > 1, "*", "")
+dat$label <- ifelse(dat$`PDL2 Score` > 1, paste("*", round(dat$`PDL2 Score`, 2)), "")
+
+ggplot(dat, aes(x=Sample, y=`PDL2 Score`, fill=`Score Type`)) + 
+  geom_col(position=position_dodge2(), width=0.7, alpha=0.75) +
+  scale_fill_manual(values=c(CPS="#9AD8DE", TPS="#388DBA")) +
+  geom_hline(yintercept=1, linetype="dashed", linewidth=1, color="#94221F") +
+  geom_text(aes(label=CPS_star, x=as.integer(Sample) - 0.17, y=`PDL2 Score`+1), size=6, color="black", fontface="bold") +
+  geom_text(aes(label=TPS_star, x=as.integer(Sample) + 0.17, y=`PDL2 Score`+1), size=6, color="black", fontface="bold") +
+  theme_minimal() +
+  scale_y_continuous(limits=c(0, 100)) +
+  guides(fill="none") +
+  theme(text=element_text(size=16, color="black", face="bold"), axis.text=element_text(size=18), 
+        axis.text.x=element_text(angle=60, hjust=1),
+        axis.title.y=element_text(size=18, margin=unit(c(0, 4, 0, 0), "mm"))) +
+  labs(y="PDL2 Score", x="")
+```

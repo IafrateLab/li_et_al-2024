@@ -1,0 +1,333 @@
+---
+title: "UMAP Figures"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+max-width: 1600px;
+margin-left: 20px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+# knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+
+library(patchwork)
+library(knitr)
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(CHETAH)
+```
+
+```{r}
+pal <- rev(RColorBrewer::brewer.pal(11, "Spectral"))
+ribo <- read.table("ribosomal.txt", header=FALSE, sep="\t")
+mito <- read.table("mitochondrial.txt", header=FALSE)
+
+clust_desc <- read.table("rna_single_cell_cluster_description.tsv", sep="\t", header=TRUE) %>% 
+  mutate(cluster=gsub("c-", "", Cluster)) %>% select(Tissue, cluster, Cell.type) %>% dplyr::rename(cell_type=Cell.type, tissue=Tissue)
+```
+
+## Salivary Gland
+
+### Original HPA clustering results and labels
+
+```{r, fig.width=12, fig.height=6}
+orig_clust <- data.table::fread("hpa_sg_cell_data.tsv") %>% as.data.frame()
+orig_clust$cell_id <- paste0("SG", orig_clust$cell_id)
+sg_clust_desc <- clust_desc %>% filter(tissue == "Salivary gland") %>% dplyr::select(!tissue)
+orig_clust <- merge(orig_clust, sg_clust_desc, by="cluster")
+
+ggplot(orig_clust, aes(x=umap_x, y=umap_y, color=cell_type)) +
+  geom_point(size=0.5, alpha=0.8) +
+  theme_bw()
+```
+
+### Re-analyze data from raw count table
+
+```{r}
+counts <- data.table::fread("/mnt/references/proteinatlas/scRNAseq/salivary_gland/read_count.tsv", sep="\t", header=TRUE) %>% as.data.frame() 
+counts <- counts %>% dplyr::rename(gene="gene\\cell_id")
+counts$symbol <- AnnotationDbi::mapIds(org.Hs.eg.db::org.Hs.eg.db, counts$gene, keytype="ENSEMBL", column="SYMBOL")
+counts$symbol[counts$gene %in% mito$V1] <- paste0("chrM", counts$gene[counts$gene %in% mito$V1])
+counts <- counts[!is.na(counts$symbol) & counts$symbol != "",]
+counts$symbol <- make.unique(counts$symbol)  # 39 gene symbols mapped to multiple ENSEMBL ids
+rownames(counts) <- counts$symbol
+counts$symbol <- NULL
+counts$gene <- NULL
+colnames(counts) <- paste0("SG", colnames(counts))
+
+counts <- counts[, colnames(counts) %in% orig_clust$cell_id]
+mat <- as(as.matrix(counts), "sparseMatrix")
+```
+
+```{r, fig.width=12, fig.height=6}
+sg_seurat <- CreateSeuratObject(mat, project="HPA Salivary Gland")
+
+sg_seurat[["percent.ribo"]] <- PercentageFeatureSet(sg_seurat, features=rownames(sg_seurat)[rownames(sg_seurat) %in% ribo$V1])
+sg_seurat[["percent.mt"]] <- PercentageFeatureSet(sg_seurat, features=rownames(sg_seurat)[grepl("chrM", rownames(sg_seurat))])
+
+VlnPlot(sg_seurat, features=c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol=4)
+```
+
+```{r}
+sg_seurat <- subset(sg_seurat, nFeature_RNA > 500 & nCount_RNA > 1000 & percent.mt < 30 & percent.ribo < 40)  # apply additional cell filtering
+sg_seurat <- NormalizeData(sg_seurat) %>% 
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA() %>% 
+  FindNeighbors(dims=1:20) %>% 
+  FindClusters(resolution=0.5) %>%
+  RunUMAP(dims=1:20)
+```
+
+```{r, fig.width=10, fig.height=6}
+sg_seurat@meta.data$cell_id <- rownames(sg_seurat@meta.data)
+sg_seurat@meta.data$orig_cluster <- orig_clust$cluster[match(sg_seurat@meta.data$cell_id, orig_clust$cell_id)]
+sg_seurat@meta.data$orig_cell_type <- orig_clust$cell_type[match(sg_seurat@meta.data$cell_id, orig_clust$cell_id)]
+
+UMAPPlot(sg_seurat, label=TRUE)
+UMAPPlot(sg_seurat, group.by="orig_cell_type")
+```
+
+### QC Plots
+
+```{r, fig.width=12, fig.height=9}
+p1 <- FeaturePlot(sg_seurat, reduction="umap", features="percent.ribo", order=TRUE, alpha=0.5, pt.size=0.01) + scale_color_gradientn(colors=pal)
+p2 <- FeaturePlot(sg_seurat, reduction="umap", features="nCount_RNA", order=TRUE, alpha=0.5, pt.size=0.01) + scale_color_gradientn(colors=pal)
+p3 <- FeaturePlot(sg_seurat, reduction="umap", features="nFeature_RNA", order=TRUE, alpha=0.5, pt.size=0.01) + scale_color_gradientn(colors=pal)
+p4 <- FeaturePlot(sg_seurat, reduction="umap", features="percent.mt", order=TRUE, alpha=0.5, pt.size=0.01) + scale_color_gradientn(colors=pal)
+
+p1 + p2 + p3 + p4 + plot_layout(ncol=2)
+```
+
+```{r, fig.width=8, fig.height=6}
+cell_type_cols <- c("Serous glandular cells"="#482576FF", "Macrophages"="#22A884FF", "Fibroblasts"="#932667FF", "Smooth muscle cells"="#2A788EFF", 
+                    "Endothelial cells"="#DD513AFF", "Salivary duct cells"="#FCA50BFF", "Plasma cells"="#43BF71FF", "T-cells"="#BBDF27FF",
+                    "B-cells"="#7AD151FF", "Mucus glandular cells"="#F3771AFF", "Mixed immune cells"="#F6D645FF")
+sg_seurat$`HPA Cell Type Classification` <- sg_seurat$orig_cell_type
+DimPlot(sg_seurat, reduction="umap", group.by="HPA Cell Type Classification", order=TRUE, alpha=0.5, pt.size=0.2) + 
+  scale_color_manual(values=cell_type_cols) +
+  labs(x="UMAP 1", y="UMAP 2", color="Cell Type", title="") +
+  guides(color="none") +
+  theme(axis.title=element_text(size=14, face="bold"), 
+        axis.text=element_text(size=16, face="bold"),
+        legend.title=element_text(face="bold"))
+```
+
+### Subset to Salivary Duct Cells
+
+```{r, fig.width=8, fig.height=6}
+sd_seurat <- subset(sg_seurat, orig_cell_type == "Salivary duct cells")
+sd_seurat <- RunPCA(sd_seurat)
+sd_seurat <- FindNeighbors(sd_seurat, dims=1:20, reduction="pca")
+sd_seurat <- FindClusters(sd_seurat, resolution=0.3, cluster.name="seurat_clusters")
+sd_seurat <- RunUMAP(sd_seurat, dims=1:20, reduction="pca", reduction.name="umap")
+sd_seurat$seurat_clusters <- paste0("C", sd_seurat$seurat_clusters)
+
+DimPlot(sd_seurat, reduction="umap", group.by="seurat_clusters", label=TRUE, alpha=0.5, pt.size=2.5, label.size=8)
+
+DimPlot(sd_seurat, reduction="umap", group.by="seurat_clusters", label=TRUE, alpha=0.5, pt.size=2.5, label.size=8) +
+  scale_color_manual(values=c("C0"="#5683B3", "C1"="#D64B40FF", "C2"="#FCA007FF", "C3"="#22A884FF", "C4"="#BBDF27FF", "C5"="#93266755")) +
+  guides(color="none") +
+  theme(axis.title=element_text(size=14, face="bold"), 
+        axis.text=element_text(size=16, face="bold"),
+        legend.title=element_text(face="bold")) +
+  labs(x="UMAP 1", y="UMAP 2", color="Cluster", title="")
+```
+
+```{r, fig.width=24, fig.height=5}
+blue_red_pal <- c("midnightblue", "darkblue", "#313695", "#4575B4", "#74ADD1", "#ABD9E9", "#FFFFBF", "#FDAE61", "darkorange", "#D73027")
+
+genes <- c("TP63", "KIT", "ACTA2", "B2M")
+min_cutoffs <- sapply(genes, function(gene) quantile(sd_seurat@assays$RNA$data[gene,], 0.01))
+max_cutoffs <- sapply(genes, function(gene) quantile(sd_seurat@assays$RNA$data[gene,], 0.99))
+
+plots <- FeaturePlot(sd_seurat, reduction="umap", features=genes, order=TRUE, alpha=0.9, pt.size=2, combine=FALSE, min.cutoff=min_cutoffs, max.cutoff=max_cutoffs)
+plots <- lapply(plots, function(p) p + scale_color_gradientn(colors=blue_red_pal, n.breaks=4) + labs(x="UMAP 1", y="UMAP 2") + 
+                  theme(plot.title=element_text(size=28),
+                        axis.text=element_text(size=22, face="bold"), 
+                        axis.title=element_text(size=20, face="bold"),
+                        axis.title.y=element_text(margin=margin(t=0, r=5, l=5, b=0)),
+                        legend.text=element_text(size=16, face="bold"),
+                        legend.position=c(0.9, 0.85)))
+gridExtra::grid.arrange(grobs=plots, ncol=4)
+```
+
+```{r}
+meta_dat <- data.frame(cell_id=names(sd_seurat$seurat_clusters), cluster=sd_seurat$seurat_clusters)
+gene_dat <- as.data.frame(t(sd_seurat@assays$RNA$data[genes,]))
+# all(rownames(gene_dat) == meta_dat$cell_id)
+dat <- cbind(meta_dat, gene_dat)
+dat <- dat %>% tidyr::pivot_longer(all_of(genes), names_to="Gene", values_to="Log Normalized Counts")
+dat <- dat %>% mutate(Gene=factor(Gene, levels=c("TP63", "KIT", "SOX2", "ACTA2", "NFIB", "B2M")))
+
+dat$`Normalized Read Counts` <- exp(dat$`Log Normalized Counts`) - 1
+```
+
+```{r, fig.width=24, fig.height=5.25}
+ggplot(dat %>% filter(cluster %in% c("C0", "C3", "C5")) %>% mutate(cluster=factor(cluster, levels=c("C3", "C0", "C5"))), 
+       aes(x=cluster, y=`Log Normalized Counts`, fill=cluster)) + 
+  geom_boxplot(alpha=0.5, outlier.size=1, width=0.6) +
+  ggsignif::geom_signif(comparisons=list(c("C3", "C0"), c("C3", "C5")), map_signif_level=TRUE, margin_top=c(0.1, 0.3), textsize=8) +
+  scale_fill_manual(values=c("C3"="#22A884FF", "C0"="#35608DFF", "C5"="#BBDF27FF")) +
+  scale_y_continuous(expand=c(0, 0.5)) +
+  guides(fill="none") +
+  theme_minimal() +
+  labs(x="") +
+  theme(text=element_text(size=20, color="black", face="bold"), 
+        axis.text.x=element_text(face="bold", size=20, color="black"), 
+        axis.text.y=element_text(size=20, color="black"),
+        axis.title.y=element_text(size=20, margin=unit(c(0, 5, 0, 0), "mm"), color="black"),
+        strip.text=element_text(size=28, face="bold", color="black")) +  # 3.85
+  facet_wrap(vars(Gene), ncol=4, scales="free")
+```
+
+## Primary ACC Sample
+
+```{r}
+samp_dir <- "/mnt/downloads/GEO/GSE217084/GSM6704936_A"
+samp <- gsub(".*_", "", samp_dir)
+counts <- Read10X(data.dir=samp_dir)
+colnames(counts) <- paste0(samp, "_", colnames(counts))
+acc_seurat <- CreateSeuratObject(counts, project=samp)
+acc_seurat[["percent.mito"]] <- PercentageFeatureSet(acc_seurat, pattern="^MT-")
+acc_seurat[["percent.ribo"]] <- PercentageFeatureSet(acc_seurat, features=rownames(acc_seurat)[rownames(acc_seurat) %in% ribo$V1])
+
+VlnPlot(acc_seurat, features=c("nFeature_RNA", "nCount_RNA", "percent.mito", "percent.ribo"), ncol=4)
+
+acc_seurat <- subset(acc_seurat, subset=nFeature_RNA > 500 & nCount_RNA > 1000 & percent.mito < 30 & percent.ribo < 40)
+acc_seurat <- NormalizeData(acc_seurat)
+acc_seurat <- FindVariableFeatures(acc_seurat)
+acc_seurat <- ScaleData(acc_seurat)
+acc_seurat <- RunPCA(acc_seurat)
+acc_seurat <- FindNeighbors(acc_seurat, dims=1:20, reduction="pca")
+acc_seurat <- FindClusters(acc_seurat, resolution=0.25, cluster.name="seurat_clusters")
+acc_seurat <- RunUMAP(acc_seurat, dims=1:20, reduction="pca", reduction.name="umap")
+
+# Rename clusters and switch C10 with C4 (highest median B2M cluster) so boxplot labels can be larger without overlap
+acc_seurat$seurat_clusters <- paste0("C", acc_seurat$seurat_clusters)
+acc_seurat$seurat_clusters <- ifelse(acc_seurat$seurat_clusters == "C10", "C4", 
+                                     ifelse(acc_seurat$seurat_clusters == "C4", "C10", acc_seurat$seurat_clusters))
+acc_seurat$seurat_clusters <- factor(acc_seurat$seurat_clusters, levels=paste0("C", 0:10))
+```
+
+### QC Plots
+
+```{r, fig.width=12, fig.height=9}
+p1 <- FeaturePlot(acc_seurat, reduction="umap", features="percent.ribo", order=TRUE, alpha=0.5, pt.size=0.1) + scale_color_gradientn(colors=pal)
+p2 <- FeaturePlot(acc_seurat, reduction="umap", features="nCount_RNA", order=TRUE, alpha=0.5, pt.size=0.1) + scale_color_gradientn(colors=pal)
+p3 <- FeaturePlot(acc_seurat, reduction="umap", features="nFeature_RNA", order=TRUE, alpha=0.5, pt.size=0.1) + scale_color_gradientn(colors=pal)
+p4 <- FeaturePlot(acc_seurat, reduction="umap", features="percent.mito", order=TRUE, alpha=0.5, pt.size=0.1) + scale_color_gradientn(colors=pal)
+
+p1 + p2 + p3 + p4 + plot_layout(ncol=2)
+```
+
+### CHETAH Cell Types
+
+```{r, fig.width=18, fig.height=8}
+hpa_ref <- readRDS("/mnt/results/eda_results/b2m/ACC_scRNAseq/data/HPA_salivary_gland_CHETAH_reference.rds")
+
+input <- SingleCellExperiment(assays=list(counts=acc_seurat@assays$RNA$counts),
+                              reducedDims=SimpleList(UMAP=acc_seurat@reductions$umap@cell.embeddings))
+input <- CHETAHclassifier(input=input, ref_cells=hpa_ref, thresh=0.03)
+
+acc_seurat[["CHETAH_HPA_celltype"]] <- input$celltype_CHETAH
+
+cell_type_cols <- c("Serous glandular cells"="#8597c9", "Macrophages"="#22A884FF", "Fibroblasts"="#932667FF", "Smooth muscle cells"="#29489E", 
+                    "Endothelial cells"="#D45F57", "Salivary duct cells"="#FCA50BFF", "Plasma cells"="#43BF71FF", "T-cells"="#BBDF27FF", 
+                    "B-cells"="#7AD151FF", "Mucus glandular cells"="#F3771AFF", "Mixed immune cells"="#F6D645FF", Unassigned="gray40")
+
+PlotCHETAH(input, col=cell_type_cols)
+```
+
+```{r, fig.width=8, fig.height=6}
+cluster_cols <- c("C0"="#BBDF27FF", "C1"="#932667FF", "C2"="#D45F57", "C3"="#FCA50AFF", "C4"="#29489E", "C5"="#22A884FF", "C6"="#7AD151FF", "C7"="#FDE725FF", "C8"="#A8E1BCFF", "C9"="#8597c9", "C10"="lightblue2")
+
+DimPlot(acc_seurat, reduction="umap", group.by="seurat_clusters", label=TRUE, alpha=0.4, pt.size=1, label.size=8) + 
+  scale_color_manual(values=cluster_cols) +
+  labs(x="UMAP 1", y="UMAP 2", title="", color="Cluster") +
+  scale_x_continuous(expand=c(0.25, 0.25)) +
+  guides(color="none") +
+  theme(axis.title=element_text(size=14, face="bold"), 
+        axis.text=element_text(size=16, face="bold"),
+        legend.title=element_text(face="bold"))
+```
+
+```{r, fig.width=8, fig.height=6}
+acc_seurat$`Cell Type Classification` <- acc_seurat$CHETAH_HPA_celltype
+DimPlot(acc_seurat, reduction="umap", group.by="Cell Type Classification", order=FALSE, alpha=0.5, pt.size=1) + 
+  scale_color_manual(values=cell_type_cols) +
+  labs(x="UMAP 1", y="UMAP 2", title="", color="Closest Cell Type") +
+  scale_x_continuous(expand=c(0.25, 0.25)) +
+  guides(color="none") +
+  theme(axis.title=element_text(size=14, face="bold"), 
+        axis.text=element_text(size=16, face="bold"),
+        legend.title=element_text(face="bold"))
+```
+
+### Top marker genes for each cluster
+
+```{r}
+acc_markers <- FindAllMarkers(acc_seurat, only.pos=TRUE)
+
+top_acc_markers <- acc_markers %>% group_by(cluster) %>% arrange(p_val_adj, desc(avg_log2FC)) %>% slice_head(n=50) %>% ungroup() 
+
+annots <- AnnotationDbi::select(org.Hs.eg.db::org.Hs.eg.db, keys=unique(top_acc_markers$gene), keytype="SYMBOL", columns="GENENAME")
+annots <- annots %>% distinct(SYMBOL, .keep_all=TRUE)
+
+top_acc_markers <- merge(top_acc_markers, annots, by.x="gene", by.y="SYMBOL")
+
+top_acc_markers %>% arrange(cluster, p_val_adj, desc(avg_log2FC)) %>% 
+  select(cluster, gene, GENENAME, p_val_adj, avg_log2FC, pct.1, pct.2) %>% dplyr::rename(gene_name=GENENAME)
+```
+
+```{r, fig.width=16, fig.height=10}
+genes <- c("TP63", "KIT", "ACTA2", "MYB", "NFIB", "B2M")
+
+min_cutoffs <- sapply(genes, function(gene) quantile(acc_seurat@assays$RNA$data[gene,], 0.01))
+max_cutoffs <- sapply(genes, function(gene) quantile(acc_seurat@assays$RNA$data[gene,], 0.99))
+
+plots <- FeaturePlot(acc_seurat, reduction="umap", features=genes, order=TRUE, alpha=0.5, pt.size=0.9, 
+                     combine=FALSE, min.cutoff=min_cutoffs, max.cutoff=max_cutoffs)
+plots <- lapply(plots, function(p) p + 
+                  scale_color_gradientn(colors=blue_red_pal) +
+                  scale_x_continuous(expand=c(0.2, 0.2)) +
+                  labs(x="UMAP 1", y="UMAP 2") + 
+                  theme(legend.position=c(0.05, 0.85),
+                        text=element_text(size=18, face="bold"),
+                        axis.text=element_text(size=18),
+                        plot.title=element_text(size=28, face="bold", color="black")))
+gridExtra::grid.arrange(grobs=plots, ncol=3)
+```
+
+```{r, fig.width=16, fig.height=10}
+meta_dat <- data.frame(cell_id=names(acc_seurat$seurat_clusters), cluster=acc_seurat$seurat_clusters)
+gene_dat <- as.data.frame(t(acc_seurat@assays$RNA$data[genes,]))
+# all(rownames(gene_dat) == meta_dat$cell_id)
+
+dat <- cbind(meta_dat, gene_dat)
+dat <- dat %>% tidyr::pivot_longer(all_of(genes), names_to="Gene", values_to="Log Normalized Counts")
+dat <- dat %>% mutate(Gene=factor(Gene, levels=c("TP63", "KIT", "ACTA2", "MYB", "NFIB", "B2M")))
+
+dat <- dat %>% group_by(cluster, Gene) %>% 
+  mutate(med_b2m=median(`Log Normalized Counts`[Gene == "B2M"])) %>% ungroup() %>% 
+  mutate(cluster=factor(cluster, levels=unique(cluster[order(med_b2m)])))
+
+ggplot(dat, aes(x=cluster, y=`Log Normalized Counts`, fill=cluster)) + 
+  geom_boxplot(alpha=0.5, outlier.size=1, width=0.5) +
+  scale_fill_manual(values=cluster_cols) +
+  guides(fill="none") +
+  theme_minimal() +
+  labs(x="") +
+  theme(text=element_text(size=20, color="black", face="bold"), 
+        axis.text.x=element_text(face="bold", size=19, color="black"),
+        axis.text.y=element_text(size=18, color="black"),
+        axis.title.y=element_text(margin=margin(0, 15, 0, 0)),
+        strip.text=element_text(size=28, face="bold", color="black"),
+        panel.spacing=unit(1.4, "lines")) +
+  facet_wrap(vars(Gene), ncol=3, scales="free")
+```

@@ -1,0 +1,343 @@
+---
+title: "Lunaphore Cell Quantification - Normal Samples"
+output: html_document
+params:
+  sample_name: "NSG"
+  input_file: "NSG_cell_intensities.csv"
+  thresholds_file: "thresholds.csv"
+  results_outdir: "quantification"
+---
+
+<style type="text/css">
+.main-container {
+max-width: 1600px;
+margin-left: 20px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+# knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)  # suppress for clean html
+
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(knitr)
+library(UpSetR)
+```
+
+## `r params$sample_name`
+
+```{r}
+# Prep input intensity data
+df <- data.table::fread(params$input_file) %>% as.data.frame()
+df <- df[!is.na(rowMeans(df %>% select(ends_with("Mean")))),]  # remove cells with failed segmentation
+
+# Fix inconsistent column names
+colnames(df) <- gsub(" \\(C\\d*\\)", "", colnames(df))
+colnames(df) <- gsub("MYB", "c-Myb", colnames(df))
+colnames(df) <- gsub("HLA-ABC", "HLA", colnames(df))
+colnames(df) <- gsub("B2-AR", "B2AR", colnames(df))
+
+rownames(df) <- df$`Object ID`
+df <- df[df$Parent != "Tumor",]
+
+df$Parent <- ifelse(df$Parent == "Root object (Image)", "non_duct", "duct")
+# table(df$Parent) %>% kable(col.names=c("Annotation", "# Cells"))
+df$is_duct <- df$Parent == "duct"
+
+# Prep threshold data for specified sample
+thresh_df <- read.csv(params$thresholds_file, check.names=FALSE)
+thresh_df <- thresh_df %>% select(marker, params$sample_name)
+colnames(thresh_df) <- c("marker", "manual")
+```
+
+#### Shape Features
+
+```{r}
+area_dat <- df %>% select(matches("^Nucleus|^Cell")) %>% filter(!is.na(df$`DAPI: Cytoplasm: Mean`))
+t(summary(area_dat)) %>% knitr::kable()
+```
+
+```{r, fig.width=12, fig.height=8}
+dat <- area_dat %>% mutate(Object.ID=rownames(area_dat))
+dat <- dat %>% tidyr::pivot_longer(!Object.ID, names_to="Feature", values_to="Value")
+ggplot(dat, aes(x=Value)) +
+  geom_histogram(bins=1000, fill="steelblue", alpha=0.8) +
+  facet_wrap(vars(Feature), ncol=5, scales="free") +
+  theme_bw()
+```
+
+#### Intensity Features
+
+```{r}
+intensity_dat <- df %>% select(ends_with("Mean")) %>% filter(!is.na(df$`DAPI: Cytoplasm: Mean`))
+t(summary(intensity_dat)) %>% knitr::kable()
+```
+
+#### Nuclear/Cytoplasmic Ratios for Each Marker
+
+```{r, fig.width=12, fig.height=8}
+ratio_dat <- data.frame(Object.ID=rownames(intensity_dat))
+markers <- unique(gsub(":.*", "", colnames(intensity_dat)))
+for (marker in markers) {
+  ratio_dat[[marker]] <- intensity_dat[[paste0(marker, ": Nucleus: Mean")]]/intensity_dat[[paste0(marker, ": Cytoplasm: Mean")]]
+}
+
+dat <- ratio_dat %>% tidyr::pivot_longer(!Object.ID, names_to="MarkerID", values_to="Ratio") %>% mutate(Marker=gsub("\\:.*", "", MarkerID))
+ggplot(dat, aes(x=log2(Ratio))) +
+  geom_histogram(bins=100, fill="steelblue", alpha=0.8) +
+  facet_wrap(vars(Marker), ncol=5, scales="free") +
+  theme_bw()
+```
+
+```{r}
+markers <- unique(gsub(":.*", "", colnames(intensity_dat)))
+nuc_markers <- grep("Myb|p63|NFIB|SOX2|FoxP3|Ki67", markers, value=TRUE)
+auto_markers <- c("Cy5", "TRITC")
+cyto_markers <- setdiff(markers, c(nuc_markers, auto_markers, "DAPI"))
+
+mean_dat <- df %>% select(`DAPI: Nucleus: Mean`, paste0(c(auto_markers, cyto_markers), ": Cell: Mean"), paste0(nuc_markers, ": Nucleus: Mean"))
+colnames(mean_dat) <- gsub("(:)? .*", "", colnames(mean_dat))
+markers <- colnames(mean_dat)
+```
+
+### Intensity Histograms with Thresholds Marked
+
+```{r, fig.width=12, fig.height=8}
+mean_cols <- c("DAPI: Nucleus: Mean", paste0(c(auto_markers, cyto_markers), ": Cell: Mean"), paste0(nuc_markers, ": Nucleus: Mean"))
+dat <- intensity_dat %>% select(all_of(mean_cols)) %>% mutate(Object.ID=rownames(intensity_dat))
+dat <- dat %>% tidyr::pivot_longer(all_of(mean_cols), names_to="MarkerID", values_to="Intensity")
+dat <- dat %>% mutate(marker=gsub("(:)? .*", "", MarkerID), marker_channel=gsub("\\:.*", "", MarkerID))
+dat <- merge(dat, thresh_df, by="marker", all.x=TRUE)
+dat$marker_channel <- factor(dat$marker_channel, levels=c("DAPI", auto_markers, cyto_markers, nuc_markers))
+
+ggplot(dat, aes(x=log2(Intensity))) +
+  geom_histogram(bins=100, fill="steelblue", alpha=0.8) +
+  geom_vline(aes(xintercept=log2(manual)), color="firebrick") +
+  facet_wrap(vars(marker_channel), ncol=5, scales="free") +
+  theme_bw()
+```
+
+### Plot All Cells by Image Centroid Coordinates
+
+Blue: DAPI, Green: CK
+
+```{r, fig.width=12, fig.height=12}
+min_max_scale <- function(col) { (col - min(col))/max(col) }
+
+dat <- df %>% select(`Object ID`, `Centroid X µm`, `Centroid Y µm`, `CK - TRITC: Cell: Mean`, `DAPI: Nucleus: Mean`)
+dat$DAPI_scaled <- min_max_scale(dat$`DAPI: Nucleus: Mean` + 1)
+dat$CK_scaled <- min_max_scale(dat$`CK - TRITC: Cell: Mean` + 1)
+
+ggplot(dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`)) +
+  geom_point(size=0.1, color="#0345fc", aes(alpha=DAPI_scaled)) +
+  geom_point(size=0.1, color="#03fc77", aes(alpha=CK_scaled)) +
+  guides(alpha="none") +
+  theme_minimal()
+
+ggplot(df, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=Parent)) +
+  geom_point(size=0.1, alpha=0.5) +
+  theme_minimal() +
+  scale_color_manual(values=c("duct"="orange", "non_duct"="#0068A9")) +
+  # guides(color="none") +
+  guides(color=guide_legend(override.aes=list(size=3))) +
+  labs(color="Annotation")
+```
+
+### Filter Data
+
+```{r}
+paste("Original Cells:", nrow(df))
+dapi_thresh <- thresh_df$manual[thresh_df$marker == "DAPI"]
+low_dapi <- df$`DAPI: Nucleus: Mean` < dapi_thresh  # low DAPI intensity
+print(paste("Low DAPI:", sum(low_dapi)))
+cyto_dapi <- df$`DAPI: Nucleus: Mean`/df$`DAPI: Cytoplasm: Mean` < 1  # DAPI not nuclear
+print(paste("Non-Nuclear DAPI:", sum(cyto_dapi)))
+mean_num_zeros <- apply(df %>% select(all_of(mean_cols)), 1, function(row) sum(row == 0))
+zero_mean <- mean_num_zeros > 0  # extreme outlier cells (contain zero intensity values)
+print(paste("Contains Zero:", sum(zero_mean)))
+extreme_outlier <- rowSums(scale(log2(df %>% select(all_of(mean_cols)))) > 10, na.rm=TRUE) > 0  # extreme outlier cells (more than 10 sd above mean) 
+print(paste("Extreme Value Outliers:", sum(extreme_outlier)))
+discard <- low_dapi | cyto_dapi | zero_mean | extreme_outlier
+paste("Discarded Cells:", sum(discard))
+```
+
+#### Plot Discarded Cells by Image Centroid Coordinates
+
+```{r, fig.width=12, fig.height=12}
+dat <- df[discard,] %>% select(`Object ID`, `Centroid X µm`, `Centroid Y µm`, `CK - TRITC: Cell: Mean`, `DAPI: Nucleus: Mean`)
+dat$DAPI_scaled <- min_max_scale(dat$`DAPI: Nucleus: Mean` + 1)
+dat$CK_scaled <- min_max_scale(dat$`CK - TRITC: Cell: Mean` + 1)
+
+ggplot(dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, alpha=CK_scaled)) +
+  geom_point(size=0.1, color="#0345fc", aes(alpha=DAPI_scaled)) +
+  geom_point(size=0.1, color="#03fc77", aes(alpha=CK_scaled)) +
+  guides(alpha="none") +
+  theme_minimal() +
+  labs(alpha="CK Scaled")
+```
+
+#### Plot Retained Cells by Image Centroid Coordinates
+
+```{r, fig.width=12, fig.height=12}
+df <- df[!discard,]
+mean_dat <- mean_dat[!discard,]
+paste("Retained Cells:", nrow(df))
+
+dat <- df %>% select(`Object ID`, `Centroid X µm`, `Centroid Y µm`, `CK - TRITC: Cell: Mean`, `DAPI: Nucleus: Mean`)
+dat$DAPI_scaled <- min_max_scale(dat$`DAPI: Nucleus: Mean` + 1)
+dat$CK_scaled <- min_max_scale(dat$`CK - TRITC: Cell: Mean` + 1)
+
+ggplot(dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, alpha=CK_scaled)) +
+  geom_point(size=0.1, color="#0345fc", aes(alpha=DAPI_scaled)) +
+  geom_point(size=0.1, color="#03fc77", aes(alpha=CK_scaled)) +
+  guides(alpha="none") +
+  theme_minimal() +
+  labs(alpha="CK Scaled")
+```
+
+## Classify Cell Types by Thresholds
+
+```{r}
+mean_dat <- mean_dat %>% select(!c(DAPI, Cy5, TRITC))
+markers <- colnames(mean_dat)
+classification_markers <- c("CD3", "CD4", "CD8", "CD68", "CD20", "CK", "Ki67", "p63", "PD-1", "FoxP3")
+thresholded_markers <- thresh_df$marker[!is.na(thresh_df$manual)]
+unthresholded_markers <- setdiff(markers, thresholded_markers)
+stopifnot(length(unthresholded_markers) == 0)  # all markers should have thresholds set
+
+# Apply binary threshold
+thresh_dat <- lapply(markers, function(marker) {
+  col <- mean_dat[marker]
+  thresh <- thresh_df$manual[thresh_df$marker == marker]
+  col[col < thresh] <- 0
+  col[col >= thresh] <- 1
+  col
+}) %>% as.data.frame(check.names=FALSE)
+
+sigmoid_dat <- lapply(markers, function(marker) {
+  col <- log2(mean_dat[marker])
+  thresh <- log2(thresh_df$manual[thresh_df$marker == marker])
+  col <- 1/(1+exp(2*(thresh - col)))  # sigmoid transformation where threshold is mapped to 0.5
+  col
+}) %>% as.data.frame(check.names=FALSE)
+```
+
+#### Upset Plot of Top 30 Positive Marker Combinations
+
+```{r, fig.width=12, fig.height=6}
+upset_dat <- lapply(classification_markers, function(marker) rownames(thresh_dat)[thresh_dat[[marker]] == 1])
+names(upset_dat) <- classification_markers
+
+upset(fromList(upset_dat), number.angles=30, point.size=2, line.size=1, text.scale=1.2, nsets=length(upset_dat), nintersects=30, order.by="freq", main.bar.color="#004586", sets.bar.color="#018F99")
+```
+
+```{r}
+cell_meta <- data.frame(cell_id=rownames(thresh_dat), annotation=df$Parent, is_duct=df$is_duct)
+
+cell_meta$pdl1_pos <- thresh_dat$`PD-L1` == 1
+
+if ("PD-L2" %in% colnames(thresh_dat)) {
+  cell_meta$pdl2_pos <- thresh_dat$`PD-L2` == 1
+}
+
+classification_dat <- thresh_dat %>% select(all_of(classification_markers))
+
+cell_meta$pos_markers <- apply(classification_dat, 1, function(row) paste(names(row)[row == 1][order(names(row)[row == 1])], collapse=", "))
+
+cell_meta <- cell_meta %>% 
+  mutate(cell_subtype=case_when(pos_markers == "CK" ~ "Epithelial",
+                                pos_markers == "CK, p63" ~ "Epithelial: Basal",
+                                pos_markers == "CK, Ki67" ~ "Epithelial: Proliferating",
+                                pos_markers == "CK, Ki67, p63" ~ "Epithelial: Basal/Proliferating",
+                                pos_markers == "CD3, CD4" ~ "T-Helper",
+                                pos_markers %in% c("CD3, CD4, CK", "CD3, CD4, CK, p63") ~ "T-Helper: on Epithelial",
+                                pos_markers == "CD3, CD4, FoxP3" ~ "T-Helper: Regulatory",
+                                pos_markers %in% c("CD3, CD4, CK, FoxP3", "CD3, CD4, CK, FoxP3, p63")  ~ "T-Helper: Regulatory/on Epithelial",
+                                pos_markers == "CD3, CD8" ~ "Cytotoxic T",
+                                pos_markers %in% c("CD3, CD8, CK", "CD3, CD8, CK, p63") ~ "Cytotoxic T: on Epithelial",
+                                pos_markers == "CD3, CD8, Ki67" ~ "Cytotoxic T: Proliferating",
+                                pos_markers %in% c("CD3, CD8, CK, Ki67", "CD3, CD8, CK, Ki67, p63") ~ "Cytotoxic T: Proliferating/on Epithelial",
+                                pos_markers == "CD3, CD8, PD-1" ~ "Cytotoxic T: Exhausted",
+                                pos_markers %in% c("CD3, CD8, CK, PD-1", "CD3, CD8, CK, p63, PD-1") ~ "Cytotoxic T: Exhausted/on Epithelial",
+                                pos_markers %in% c("CD68", "CD4, CD68") ~ "Macrophage",
+                                pos_markers %in% c("CD68, CK", "CD4, CD68, CK", "CD68, CK, p63", "CD4, CD68, CK, p63") ~ "Macrophage: on Epithelial",
+                                pos_markers %in% c("CD68, Ki67", "CD4, CD68, Ki67") ~ "Macrophage: Proliferating",
+                                pos_markers %in% c("CD68, CK, Ki67", "CD4, CD68, CK, Ki67", "CD68, CK, Ki67, p63", "CD4, CD68, CK, Ki67, p63") ~ "Macrophage: Proliferating/on Epithelial",
+                                pos_markers %in% c("CD68, PD-1", "CD4, CD68, PD-1") ~ "Macrophage: Suppressed",
+                                pos_markers %in% c("CD68, CK, PD-1", "CD4, CD68, CK, PD-1", "CD68, CK, p63, PD-1", "CD4, CD68, CK, p63, PD-1") ~ "Macrophage: Suppressed/on Epithelial",
+                                pos_markers == "CD20" ~ "B Cell",
+                                pos_markers %in% c("CD20, CK", "CD20, CK, p63") ~ "B Cell: on Epithelial",
+                                pos_markers == "CD20, Ki67" ~ "B Cell: Proliferating",
+                                pos_markers %in% c("CD20, CK, Ki67", "CD20, CK, Ki67, p63") ~ "B Cell: Proliferating/on Epithelial",
+                                TRUE ~ "Unknown"))
+
+cell_meta <- cell_meta %>% mutate(cell_type=gsub(":.*", "", cell_subtype))
+```
+
+#### Upset Plot of All Valid Positive Marker Combinations
+
+```{r, fig.width=12, fig.height=6}
+classified_cells <- cell_meta$cell_id[cell_meta$cell_type != "Unknown"]
+classified_thresh_dat <- classification_dat[rownames(classification_dat) %in% classified_cells,]
+upset_dat <- lapply(classification_markers, function(marker) rownames(classified_thresh_dat)[classified_thresh_dat[[marker]] == 1])
+names(upset_dat) <- classification_markers
+
+upset(fromList(upset_dat), number.angles=30, point.size=2, line.size=1, text.scale=1.2, nsets=length(upset_dat), nintersects=30, order.by="freq", main.bar.color="#004586", sets.bar.color="#018F99")
+```
+
+#### Cell Type Quantification Tables
+
+```{r}
+create_summary <- function(meta_df) {
+  cell_counts <- data.frame(cell_type=c("Epithelial", "T-Helper", "Cytotoxic T", "Macrophage", "B Cell", "Unknown"))
+  cell_counts$num_cells <- sapply(cell_counts$cell_type, function(x) sum(meta_df$cell_type == x))
+  
+  summary_df <- data.frame(t(cell_counts$num_cells))
+  colnames(summary_df) <- cell_counts$cell_type
+  summary_df <- summary_df %>% mutate(Sample=params$sample_name,
+                                      `T Cell`=`Cytotoxic T` + `T-Helper`,
+                                      `Total Immune`=sum(across(c("Macrophage", "T Cell", "B Cell"))),
+                                      `Total Classified`=sum(across(c("Total Immune", "Epithelial"))),
+                                      `Total Cells`=sum(across(c("Total Classified", "Unknown"))),
+                                      `Perc Classified`=100*`Total Classified`/`Total Cells`,
+                                      `Perc Immune`=100*`Total Immune`/`Total Classified`,
+                                      `Perc Epithelial`=100*Epithelial/`Total Classified`,
+                                      `Perc Macrophage`=100*Macrophage/`Total Immune`,
+                                      `Perc T Cell`=100*`T Cell`/`Total Immune`,
+                                      `Perc T-Helper`=100*`T-Helper`/`Total Immune`,
+                                      `Perc Cytotoxic T`=100*`Cytotoxic T`/`Total Immune`,
+                                      `Perc B Cell`=100*`B Cell`/`Total Immune`)
+  
+  # Reorder columns
+  summary_df %>% select(Sample, `Total Cells`, `Total Classified`, `Perc Classified`, `Total Immune`, `Perc Immune`, 
+                        Epithelial, `Perc Epithelial`, Macrophage, `Perc Macrophage`, `B Cell`, `Perc B Cell`, 
+                        `T Cell`, `Perc T Cell`, `Cytotoxic T`, `Perc Cytotoxic T`, `T-Helper`, `Perc T-Helper`)
+}
+
+# Normal duct area
+duct_summary <- create_summary(cell_meta %>% filter(annotation == "duct"))
+duct_summary %>% select(!c(`T Cell`, `Perc T Cell`)) %>% 
+  mutate(across(starts_with("Perc"), function(col) paste0(round(col, 2), "%"))) %>% 
+  t() %>% kable(caption="Duct Area: Cell Type")
+duct_subtype_summary <- cell_meta %>% filter(annotation == "duct") %>% group_by(cell_subtype) %>% summarize(num_cells=n_distinct(cell_id))
+duct_subtype_summary %>% kable(caption="Duct Area: Cell Subtype", col.names=c())
+
+# Normal non-duct area
+non_duct_summary <- create_summary(cell_meta %>% filter(annotation == "non_duct"))
+non_duct_summary %>% select(!c(`T Cell`, `Perc T Cell`)) %>% 
+  mutate(across(starts_with("Perc"), function(col) paste0(round(col, 2), "%"))) %>% 
+  t() %>% kable(caption="Non-Duct Area: Cell Type")
+non_duct_subtype_summary <- cell_meta %>% filter(annotation == "non_duct") %>% group_by(cell_subtype) %>% summarize(num_cells=n_distinct(cell_id))
+non_duct_subtype_summary %>% kable(caption="Non-Duct Area: Cell Subtype", col.names=c())
+```
+
+```{r}
+# Save sigmoid-transformed intensities of filtered cells with annotations/coordinates for plots
+sigmoid_dat$cell_id <- rownames(sigmoid_dat)
+cell_meta <- merge(cell_meta, df %>% select(`Object ID`, `Centroid X µm`, `Centroid Y µm`) %>% rename(cell_id=`Object ID`), by="cell_id")
+cell_meta <- merge(cell_meta, sigmoid_dat, by="cell_id")
+
+write.csv(cell_meta, paste0(params$results_outdir, "/", params$sample_name, "_filtered_cells.csv"), row.names=FALSE)
+```

@@ -1,0 +1,63 @@
+---
+title: "Figure 1"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+max-width: 1600px;
+margin-left: 20px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+# knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+
+library(dplyr)
+library(ggplot2)
+
+quant_dir <- "quantification/"
+```
+
+### Centroid Cell Type Plots - Tumor Examples
+
+#### ACC3
+
+```{r, fig.width=8, fig.height=8}
+dat <- read.csv(paste0(quant_dir, "ACC3_filtered_cells.csv"), check.names=FALSE)
+fig2_cell_type_pal <- c("B Cell"="#ffee00", "Cytotoxic T"="#ff2200", "Epithelial"="#52ADAD", "Macrophage"="#C43BC4", "T-Helper"="#00eeee")
+ggplot(dat %>% filter(cell_type != "Unknown"), aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=cell_type)) +
+  geom_point(size=1, alpha=0.8) +
+  scale_color_manual(values=fig2_cell_type_pal) +
+  scale_x_continuous(n.breaks=4, limits=c(2500, 3750), expand=c(0, 0)) +
+  scale_y_continuous(n.breaks=4, limits=c(-1280, -30), expand=c(0, 0)) +
+  guides(color="none") +
+  theme_bw() +
+  theme(text=element_text(size=14), 
+        axis.title=element_text(face="bold"), 
+        legend.title=element_text(face="bold"), 
+        axis.text.y=element_text(angle=90),
+        panel.border=element_rect(fill=NA, color="black", size=1, linetype="solid")) +
+  labs(y="Centroid Y µm")
+```
+
+#### SqCC3
+
+```{r, fig.width=8, fig.height=8}
+dat <- read.csv(paste0(quant_dir, "SqCC3_filtered_cells.csv"), check.names=FALSE)
+ggplot(dat %>% filter(cell_type != "Unknown"), aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=cell_type)) +
+  geom_point(size=1, alpha=0.8) +
+  scale_color_manual(values=fig2_cell_type_pal) +
+  scale_x_continuous(n.breaks=4, limits=c(6440, 7690), expand=c(0, 0)) +
+  scale_y_continuous(n.breaks=4, limits=c(-5365, -4115), expand=c(0, 0)) +
+  guides(color="none") +
+  theme_bw() +
+  theme(text=element_text(size=14), 
+        axis.title=element_text(face="bold"), 
+        legend.title=element_text(face="bold"), 
+        axis.text.y=element_text(angle=90),
+        panel.border=element_rect(fill=NA, color="black", size=1, linetype="solid")) +
+  labs(y="Centroid Y µm")
+```
+

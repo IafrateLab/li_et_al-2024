@@ -1,0 +1,375 @@
+---
+title: "ACC23 Visium HD - 008um Bins"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+max-width: 1600px;
+margin-left: 20px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+# knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(clusterProfiler)
+library(simplifyEnrichment)
+library(enrichplot)
+```
+
+```{r}
+result_dir <- "ACC23/"
+img <- Read10X_Image(image.dir=paste0(result_dir, "outs/binned_outputs/square_008um/spatial"), image.name="tissue_hires_image.png")
+object <- Load10X_Spatial(data.dir=paste0(result_dir, "outs/"), bin.size=8, image=img)
+DefaultAssay(object) <- "Spatial.008um"
+
+artifacts <- read.csv(paste0(result_dir, "ACC23_Artifacts.csv"), header=TRUE)
+
+object[["artifact"]] <- artifacts$Annotation[match(rownames(object@meta.data), artifacts$Barcode)]
+object[["non_artifact"]] <- is.na(object[["artifact"]])  # artifacts are marker "fold_x", non-artifacts are NA
+```
+
+### QC Plots
+
+```{r, fig.width=12, fig.height=4}
+krt_genes <- read.table("HGNC_keratin_family_genes.tsv", sep="\t", header=TRUE)$Approved.symbol
+col_genes <- read.table("HGNC_collagen_family_genes.tsv", sep="\t", header=TRUE)$Approved.symbol
+krt_genes <- intersect(krt_genes, rownames(object))
+col_genes <- intersect(col_genes, rownames(object))
+
+object[["percent.mito"]] <- PercentageFeatureSet(object, pattern="^MT-")
+object[["percent.krt"]] <- PercentageFeatureSet(object, features=krt_genes)
+object[["percent.col"]] <- PercentageFeatureSet(object, features=col_genes)
+
+VlnPlot(object, features=c("nCount_Spatial.008um", "nFeature_Spatial.008um", "percent.mito"), pt.size=0, ncol=3)
+```
+
+### Before Filtering Bins
+
+```{r, fig.width=8, fig.height=6}
+SpatialFeaturePlot(object, features="nCount_Spatial.008um", shape=22, pt.size.factor=10, image.scale="hires")
+SpatialFeaturePlot(object, features="nFeature_Spatial.008um", shape=22, pt.size.factor=10, image.scale="hires")
+```
+
+### After Filtering Bins
+
+```{r, fig.width=8, fig.height=6}
+object <- subset(object, subset=nFeature_Spatial.008um >= 100 & percent.mito < 25 & non_artifact)
+
+SpatialFeaturePlot(object, features="nCount_Spatial.008um", shape=22, pt.size.factor=8, image.scale="hires")
+SpatialFeaturePlot(object, features="nFeature_Spatial.008um", shape=22, pt.size.factor=8, image.scale="hires")
+```
+
+```{r, fig.width=8, fig.height=6}
+object <- NormalizeData(object)
+object <- FindVariableFeatures(object)
+object <- ScaleData(object)
+object <- RunPCA(object, reduction.name="pca")
+ElbowPlot(object, ndims=50, reduction="pca")
+```
+
+```{r, fig.width=8, fig.height=6}
+object <- FindNeighbors(object, reduction="pca", dims=1:20)
+object <- FindClusters(object, cluster.name="seurat_cluster", resolution=0.6)
+object <- RunUMAP(object, reduction="pca", reduction.name="umap", 
+                  return.model=T, dims=1:20, n.neighbors=15, min.dist=0.1, seed.use=1)
+```
+
+```{r}
+# Rename clusters and set cluster color palette
+num_clusters <- length(unique(object$seurat_cluster))
+clusters <- paste0("C", 0:(num_clusters - 1))
+object$seurat_cluster <- factor(paste0("C", object$seurat_cluster), levels=clusters)
+Idents(object) <- "seurat_cluster"
+
+cluster_pal <- c("#22A889", "#0068A9", "#FCA50B", "#C23637", "#7AD151", "#35B7CE", "#E96302", 
+                 "#932667", "#92C4E9", "#CDA0CB", "#F5D77E", "lightcoral", "#BBDF70", 
+                 "#33BF71", "#FBB874")[1:num_clusters]
+
+names(cluster_pal) <- clusters
+```
+
+### UMAP Showing Clusters
+
+```{r, fig.width=8.5, fig.height=6}
+# Remove small outlier cluster (clusters 13 contains only 2 cells)
+object <- subset(object, seurat_cluster %in% paste0("C", 0:12))
+
+DimPlot(object, reduction="umap", raster=FALSE, label=TRUE, label.size=5, alpha=0.5) + 
+  scale_color_manual(values=cluster_pal) +
+  guides(color="none") +
+  labs(x="UMAP 1", y="UMAP 2", color="Cluster") +
+  theme(legend.title=element_text(face="bold"), axis.title=element_text(size=9), axis.text=element_text(size=8))
+```
+
+```{r, fig.width=12, fig.height=12}
+cells <- CellsByIdentities(object)
+p <- SpatialDimPlot(object, shape=22, pt.size.factor=10,
+                    cells.highlight=cells[setdiff(names(cells), "NA")],
+                    cols.highlight=c("#FFFF00", "grey50"), 
+                    facet.highlight=T, combine=T, 
+                    image.scale="hires") + NoLegend()
+p
+```
+
+### B2M Expression
+
+```{r, fig.width=8, fig.height=8}
+SpatialFeaturePlot(object, features="B2M", shape=22, pt.size.factor=10, 
+                   image.alpha=0.5, image.scale="hires") + 
+  scale_fill_gradientn(colors=c("#EEEEEE", "red")) +
+  guides(fill="none")
+# theme(legend.position="right", legend.title=element_text(face="bold"))
+```
+
+### B2M by Cluster
+
+```{r}
+known_ACC_genes <- c("EN1", "MIA", "FABP7", "POU3F2", "PRAME","ART3", "MEX3A", "ROPN1B", "SOX8", "SOX10")
+object[["percent.acc.genes"]] <- PercentageFeatureSet(object, features=known_ACC_genes)
+
+dat <- data.frame(cell_id=rownames(object@meta.data), 
+                  Cluster=object$seurat_cluster, 
+                  B2M=object@assays$Spatial.008um$data["B2M",],
+                  pct_krt=object$percent.krt,
+                  pct_col=object$percent.col,
+                  pct_acc=object$percent.acc.genes)
+
+dat_summary <- dat %>% group_by(Cluster) %>%
+  summarize(`# Cells`=n_distinct(cell_id), 
+            `Mean B2M Expr`=mean(B2M),
+            `Mean Non-zero B2M Expr`=mean(B2M[B2M > 0]),
+            `% Cells B2M > 0`=100*mean(B2M > 0),
+            `% Keratins`=mean(pct_krt),
+            `% Collagens`=mean(pct_col),
+            `% Known ACC Gene Sig`=mean(pct_acc))
+
+dat_summary <- dat_summary %>%
+  mutate(Description=case_when(Cluster == "C0" ~ "Tumor",
+                               Cluster == "C1" ~ "Tumor",
+                               Cluster == "C2" ~ "Tumor (S Phase)",
+                               Cluster == "C3" ~ "Tumor (High B2M)",
+                               Cluster == "C4" ~ "Mixed Immune / Fibroblast",
+                               Cluster == "C5" ~ "Macrophage",
+                               Cluster == "C6" ~ "Tumor (Hypoxic)",
+                               Cluster == "C7" ~ "Tumor",
+                               Cluster == "C8" ~ "Endothelial",
+                               Cluster == "C9" ~ "Tumor",
+                               Cluster == "C10" ~ "B Cell",
+                               Cluster == "C11" ~ "Skeletal Muscle",
+                               Cluster == "C12" ~ "Tumor"))
+
+dat_summary %>% arrange(desc(`Mean B2M Expr`)) %>% knitr::kable()
+
+write.table(dat_summary %>% arrange(Cluster), 
+            paste0(result_dir, "ACC23_cluster_stats.tsv"), sep="\t", row.names=FALSE)
+```
+
+```{r}
+# Find cluster specific marker genes
+Idents(object) <- "seurat_cluster"
+object <- BuildClusterTree(object, assay="Spatial.008um", reduction="pca", reorder=TRUE)
+
+markers <- FindAllMarkers(object, assay="Spatial.008um", only.pos=TRUE)
+top20 <- markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(p_val_adj < 0.01, avg_log2FC > 1, pct.1 > 0.1) %>%
+  arrange(desc(avg_log2FC)) %>%
+  slice_head(n=20) %>%
+  ungroup()
+
+top_marker_df <- top20 %>% 
+  mutate(cluster=factor(cluster, levels=clusters)) %>% 
+  arrange(cluster)
+
+write.table(top_marker_df, paste0(result_dir, "ACC23_top_cluster_marker_genes.tsv"), sep="\t", row.names=FALSE)
+```
+
+### Heatmap of Top Cluster Marker Genes
+
+```{r, fig.width=15, fig.height=9}
+# Select 3 marker genes per cluster for heatmap
+heatmap_genes <- c("ACTC1", "TTN", "DES",
+                   "VEGFA", "NDRG1", "SLC2A1",
+                   "KRT6B", "MMP7", "GABRP",
+                   "ABCA13", "AZGP1", "EHF",
+                   "FCGBP", "C1QC", "CD14",
+                   # C7 defined by lack of specific marker expression 
+                   "TNXB", "LTBP4", "TGFBR2",
+                   "LGR6", "PLAT", "APOE",
+                   "HIST1H1B", "TOP2A", "HIST1H1D",
+                   "TNNI2", "FOS", "CDKN1A",
+                   "IGKC", "IGHG1", "IGHA1",
+                   "COL6A3", "FN1", "CD74",
+                   "PECAM1", "RGS5", "ENG")
+
+object@assays$Spatial.008um$scale.markers <- t(scale(t(object@assays$Spatial.008um$data[heatmap_genes,])))
+p <- DoHeatmap(subset(object, downsample=1000), slot="scale.markers", assay="Spatial.008um", 
+               features=heatmap_genes, group.colors=cluster_pal, size=6) + 
+  scale_fill_gradientn(colors=rev(RColorBrewer::brewer.pal(7, "RdYlBu"))) +
+  guides(color="none", fill="none") +
+  labs(fill="Scaled Expression") +
+  theme(legend.title=element_text(face="bold"), 
+        text=element_text(color="#010101"),
+        axis.text.y=element_text(size=12, face="bold"), legend.key.size=unit(0.4, "cm"), legend.position="bottom")
+
+p
+```
+
+```{r, fig.width=7, fig.height=6}
+p <- FeaturePlot(object, features="B2M", reduction="umap", pt.size=0.01, order=TRUE, alpha=0.2, raster=FALSE)
+
+p + scale_color_gradientn(colors=c("#DDDDDD", "red")) + labs(x="UMAP 1", y="UMAP 2") + guides(color="none")
+```
+
+```{r}
+markers$Description <- AnnotationDbi::mapIds(org.Hs.eg.db::org.Hs.eg.db, markers$gene, keytype="SYMBOL", column="GENENAME")
+markers$entrez_id <- AnnotationDbi::mapIds(org.Hs.eg.db::org.Hs.eg.db, markers$gene, keytype="SYMBOL", column="ENTREZID")
+```
+
+## DE High B2M vs Low B2M Clusters
+
+```{r}
+object[["group"]] <- ifelse(object$seurat_cluster %in% c("C3"), "HighB2M",
+                            ifelse(object$seurat_cluster %in% c("C0", "C1", "C2", "C6", "C7", "C9", "C12"), "LowB2M", "Other"))
+aggregate_object <- AggregateExpression(object, group.by = "group", return.seurat = TRUE)
+
+Idents(object) <- "group"
+
+res <- FindMarkers(object, ident.1 = "HighB2M", ident.2 = "LowB2M", verbose = FALSE)
+top_upreg <- res %>% filter(p_val_adj < 0.05, avg_log2FC > 0.5) %>% arrange(desc(avg_log2FC)) %>% head(20) %>% rownames()
+top_downreg <- res %>% filter(p_val_adj < 0.05, avg_log2FC < -0.5) %>% arrange(avg_log2FC) %>% head(10) %>% rownames()
+
+gene_labels <- c(top_upreg, top_downreg)
+CellScatter(aggregate_object, "HighB2M", "LowB2M", highlight = gene_labels) %>%
+  LabelPoints(points = gene_labels, repel=TRUE) + geom_abline(slope=1, color="blue4")
+```
+
+```{r}
+res$SYMBOL <- rownames(res)
+annots <- AnnotationDbi::select(org.Hs.eg.db::org.Hs.eg.db, keys=unique(res$SYMBOL), 
+                                keytype="SYMBOL", columns=c("GENENAME", "ENTREZID", "ENSEMBL"))
+annots <- annots %>% distinct(SYMBOL, .keep_all=TRUE)
+res <- merge(res, annots, by="SYMBOL", all.x=TRUE)
+res <- res %>% arrange(p_val_adj)
+```
+
+```{r}
+# Save significant results
+sig_res <- res %>% 
+  filter(p_val_adj < 0.05, abs(avg_log2FC) > 0.5) %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  select(SYMBOL, GENENAME, p_val_adj, avg_log2FC, pct.1, pct.2)
+
+write.table(sig_res, paste0(result_dir, "ACC23_high_vs_low_B2M_tumor_clusters_DE_sig_res.tsv"), sep="\t", row.names=FALSE)
+```
+
+```{r, fig.width=8, fig.height=8}
+Idents(object) <- "seurat_cluster"
+SpatialDimPlot(subset(object, seurat_cluster %in% c("C3", "C0", "C1", "C2", "C6", "C7", "C9", "C12")), repel=T, 
+               label.size=7, image.scale="hires", pt.size.factor=5, shape=22, image.alpha=0.5) +
+  scale_fill_manual(values=cluster_pal) + 
+  # guides(fill="none") +
+  guides(fill=guide_legend(override.aes=list(size=4))) +
+  labs(fill="")
+```
+
+
+### Top Up-Reg Genes
+
+```{r}
+top_upreg <- res %>% filter(p_val_adj < 0.05, avg_log2FC > 0.5) %>% arrange(desc(avg_log2FC))
+top_upreg %>% select(SYMBOL, GENENAME, p_val_adj, avg_log2FC, pct.1, pct.2) %>% head(100) %>% knitr::kable(row.names=FALSE, caption=nrow(top_upreg))
+```
+
+### Top Down-Reg Genes
+
+```{r}
+top_downreg <- res %>% filter(p_val_adj < 0.05, avg_log2FC < -0.5) %>% arrange(avg_log2FC)
+top_downreg %>% select(SYMBOL, GENENAME, p_val_adj, avg_log2FC, pct.1, pct.2) %>% head(100) %>% knitr::kable(row.names=FALSE, caption=nrow(top_downreg))
+```
+
+### Volcano Plot Highlighting IHC Validation Genes
+
+```{r, fig.width=7, fig.height=5}
+res <- res %>% mutate(Category=ifelse(p_val_adj < 0.05 & avg_log2FC > 0.5, "Upregulated", 
+                                      ifelse(p_val_adj < 0.05 & avg_log2FC < -0.5, "Downregulated", 
+                                             "Not Significant")),
+                      Label=ifelse(SYMBOL %in% c("IRF1", "TAP1", "GBP1"),
+                                   SYMBOL, NA),
+                      p_val_adj=ifelse(p_val_adj == 0, .Machine$double.xmin, p_val_adj))
+
+ggplot(res, aes(x=avg_log2FC, y=-log10(p_val_adj))) +
+  geom_point(aes(size=100*pct.1, color=Category), alpha=0.25) +
+  # ggrepel::geom_text_repel(aes(label=Label), force=1, force_pull=-0.5, point.size=2, min.segment.length=0, 
+  #                          arrow=arrow(length=unit(0.005, "npc")), fontface="bold", size=4.5, color="gray20") +
+  geom_hline(yintercept=-log10(0.05), linetype=2, linewidth=0.3) +
+  geom_vline(xintercept=c(-0.5, 0.5), linetype=2, linewidth=0.3) +
+  scale_size_continuous(range=c(0.1, 6)) +
+  scale_y_continuous(limits=c(0, 330), expand=c(0.01, 0.01)) +
+  scale_color_manual(values=c("Upregulated"="#C23637", "Downregulated"="#0078A9", "Not Significant"="#CCCCCC")) +
+  theme_minimal() +
+  guides(label="none", color=guide_legend(override.aes=list(size=5)), size=guide_legend(override.aes=list(range=c(0, 8)))) +
+  labs(x="Log2FC", y="-Log10(Adj p-Val)", size="% Cells Detected (C3)") +
+  theme(legend.title=element_text(face="bold"), axis.title=element_text(size=14))
+```
+
+### Gene Set Enrichment Analysis
+
+```{r}
+res <- res[!is.na(res$ENTREZID),]
+rownames(res) <- res$ENTREZID
+lfc <- res$avg_log2FC
+names(lfc) <- res$ENTREZID
+lfc <- sort(lfc, decreasing=TRUE)
+```
+
+### Biological Process
+
+```{r, fig.width=6, fig.height=4, results='asis'}
+gseaGO_bp <- gseGO(geneList=lfc,
+                   OrgDb=org.Hs.eg.db::org.Hs.eg.db, 
+                   ont='BP', 
+                   minGSSize=20, 
+                   pvalueCutoff=0.05,
+                   verbose=FALSE) 
+
+for (term in c("response to type II interferon", "adaptive immune response", "innate immune response")) {
+  gseaplot2(gseaGO_bp, geneSetID=which(gseaGO_bp$Description == term), color="#74C465", base_size=11.5) %>% print()
+}
+
+gseaGO_bp@result
+
+gseaGO_bp <- setReadable(gseaGO_bp, 'org.Hs.eg.db', 'ENTREZID')
+```
+
+```{r, fig.width=12, fig.height=7}
+go_ids_bp <- gseaGO_bp@result %>% filter(enrichmentScore > 0) %>% pull(ID)
+bp_mat <- GO_similarity(go_ids_bp, ont="BP")
+
+simplifyGO_res <- simplifyGO(bp_mat, fontsize_range=c(9, 12),
+                             word_cloud_grob_param=list(max_width=80))
+```
+
+```{r, fig.width=7, fig.height=9}
+gseaGO_bp_simple <- simplify(gseaGO_bp %>% filter(enrichmentScore > 0, p.adjust < 0.05), cutoff=0.5)
+dotplot(gseaGO_bp_simple, showCategory=20) + theme(legend.title=element_text(face="bold"))
+```
+
+```{r}
+gseaGO_bp <- gseaGO_bp %>% mutate(cluster=simplifyGO_res$cluster[match(ID, simplifyGO_res$id)])
+```
+
+```{r, fig.width=7.5, fig.height=9}
+gseaGO_bp_dedup <- gseaGO_bp %>% group_by(cluster) %>% arrange(p.adjust) %>% 
+  mutate(duplicated=duplicated(cluster)) %>% filter(!is.na(cluster), !duplicated)
+
+dotplot(gseaGO_bp_dedup, showCategory=20, x="enrichmentScore") + 
+  labs(x="Enrichment Score") +
+  theme(legend.title=element_text(face="bold"), axis.text.y=element_text(size=14))
+```

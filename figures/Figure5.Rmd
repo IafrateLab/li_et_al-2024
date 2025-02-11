@@ -1,0 +1,146 @@
+---
+title: "Figure 5"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+max-width: 1600px;
+margin-left: 20px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+# knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+
+library(dplyr)
+library(ggplot2)
+
+quant_dir <- "quantification/"
+```
+
+### Duct Centroid Plots & Box Plots
+
+#### Normal Breast
+
+```{r, fig.width=8, fig.height=8}
+dat <- read.csv(paste0(quant_dir, "NB_filtered_cells.csv"), check.names=FALSE)
+dat <- dat %>% filter(cell_type == "Epithelial")
+
+dat <- dat %>% mutate(Category=case_when(is_duct & p63 >= 0.5 ~ "p63+ Duct",
+                                         is_duct & p63 < 0.5 ~ "p63- Duct",
+                                         TRUE ~ "Other"))
+
+plot_dat <- dat %>% filter(Category != "Other")
+
+ggplot(plot_dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=Category)) +
+  geom_point(size=0.2, alpha=0.5) +
+  scale_color_manual(values=c("p63+ Duct"="coral", "p63- Duct"="#3A68AE")) +
+  # guides(color=guide_legend(override.aes=list(size=3))) +
+  guides(color="none") +
+  theme_minimal() +
+  theme(legend.title=element_text(face="bold"),
+        axis.title=element_text(face="bold"),
+        axis.text.y=element_text(angle=90)) +
+  labs(y="Centroid Y µm")
+```
+
+```{r, fig.width=6, fig.height=6}
+ggplot(plot_dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=Category)) +
+  geom_point(size=3, alpha=0.8) +
+  scale_color_manual(values=c("p63+ Duct"="coral", "p63- Duct"="#3A68AE")) +
+  scale_x_continuous(n.breaks=4, limits=c(4050, 4600)) +
+  scale_y_continuous(n.breaks=4, limits=c(-7330, -6780)) +
+  guides(color="none") +
+  theme_bw() +
+  theme(text=element_blank(),
+        axis.ticks=element_blank(),
+        panel.border=element_rect(fill=NA, color="#171717", linewidth=3, linetype="solid")) +
+  labs(y="Centroid Y µm")
+```
+
+```{r, fig.width=20, fig.height=4}
+long_dat <- plot_dat %>% select(cell_id, Category, p63, B2M, HLA, SMA, NFIB) %>% 
+  tidyr::pivot_longer(c(p63, B2M, HLA, SMA, NFIB), names_to="Marker", values_to="Intensity")
+long_dat <- long_dat %>% group_by(Category, Marker) %>% mutate(Marker_Med=median(log2(Intensity + 1))) %>% ungroup()
+long_dat <- long_dat %>% mutate(Marker=factor(Marker, levels=c("p63", "SMA", "NFIB", "B2M", "HLA")), 
+                                Category=factor(Category, levels=c("p63+ Duct", "p63- Duct")))
+long_dat <- long_dat %>% group_by(Marker, Category) %>% mutate(med_intensity=median(Intensity)) %>% ungroup()
+
+ggplot(long_dat, aes(x=Category, y=Intensity)) +
+  geom_boxplot(aes(group=Category, fill=med_intensity), outlier.size=0.1, alpha=0.5, outlier.alpha=0.1, width=0.5) +
+  ggsignif::geom_signif(comparisons=list(c("p63+ Duct", "p63- Duct")), map_signif_level=TRUE, margin_top=c(0.1, 0.25), textsize=4) +
+  scale_fill_gradientn(colors=rev(RColorBrewer::brewer.pal(10, "RdYlBu"))) +
+  scale_y_continuous(expand=c(0.1, 0, 0, 0.1), limits=c(0, 1.1), breaks=c(0, 0.25, 0.5, 0.75, 1)) +
+  theme_minimal() +
+  facet_wrap(vars(Marker), ncol=5) +
+  labs(y="Sigmoid Cell Mean Intensity", x="", fill="Median Intensity") +
+  theme(text=element_text(size=12, face="bold", color="black"), 
+        axis.text=element_text(face="bold", size=14), 
+        axis.title.y=element_text(size=14, margin=margin(t=0, r=12, b=0, l=0)),
+        axis.text.x=element_text(angle=45, hjust=1), 
+        legend.title=element_text(size=12),
+        strip.text=element_text(size=16)) +
+  labs(fill="Median\nIntensity")
+```
+
+#### Normal Salivary Gland
+
+```{r, fig.width=8, fig.height=8}
+dat <- read.csv(paste0(quant_dir, "NSG_filtered_cells.csv"), check.names=FALSE)
+dat <- dat %>% filter(cell_type == "Epithelial")
+
+dat <- dat %>% mutate(Category=case_when(is_duct & p63 >= 0.5 ~ "p63+ Duct",
+                                         is_duct & p63 < 0.5 ~ "p63- Duct",
+                                         TRUE ~ "Other"))
+
+plot_dat <- dat %>% filter(Category != "Other")
+
+ggplot(plot_dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=Category)) +
+  geom_point(size=0.1, alpha=0.5) +
+  scale_color_manual(values=c("p63+ Duct"="coral", "p63- Duct"="#3A68AE")) +
+  scale_x_continuous(limits=c(2500, max(dat$`Centroid X µm`)+2500)) +
+  guides(color="none") +
+  theme_minimal() +
+  theme(axis.title=element_text(face="bold"),
+        axis.text.y=element_text(angle=90))
+```
+
+```{r, fig.width=6, fig.height=6}
+ggplot(plot_dat, aes(x=`Centroid X µm`, y=-`Centroid Y µm`, color=Category)) +
+  geom_point(size=3, alpha=0.8) +
+  scale_color_manual(values=c("p63+ Duct"="coral", "p63- Duct"="#3A68AE")) +
+  scale_x_continuous(n.breaks=4, limits=c(8400, 9150)) +
+  scale_y_continuous(n.breaks=4, limits=c(-3450, -2700)) +
+  guides(color="none") +
+  theme_bw() +
+  theme(text=element_blank(),
+        axis.ticks=element_blank(),
+        panel.border=element_rect(fill=NA, color="#171717", size=3, linetype="solid")) +
+  labs(y="Centroid Y µm")
+```
+
+```{r, fig.width=20, fig.height=4}
+long_dat <- plot_dat %>% select(cell_id, Category, p63, B2M, HLA, SMA, NFIB) %>% 
+  tidyr::pivot_longer(c(p63, B2M, HLA, SMA, NFIB), names_to="Marker", values_to="Intensity")
+long_dat <- long_dat %>% group_by(Category, Marker) %>% mutate(Marker_Med=median(log2(Intensity + 1))) %>% ungroup()
+long_dat <- long_dat %>% mutate(Marker=factor(Marker, levels=c("p63", "SMA", "NFIB", "B2M", "HLA")), 
+                                Category=factor(Category, levels=c("p63+ Duct", "p63- Duct")))
+long_dat <- long_dat %>% group_by(Marker, Category) %>% mutate(med_intensity=median(Intensity)) %>% ungroup()
+
+ggplot(long_dat, aes(x=Category, y=Intensity)) +
+  geom_boxplot(aes(group=Category, fill=med_intensity), outlier.size=0.1, alpha=0.5, outlier.alpha=0.1, width=0.5) +
+  ggsignif::geom_signif(comparisons=list(c("p63+ Duct", "p63- Duct")), map_signif_level=TRUE, margin_top=c(0.1, 0.25), textsize=4) +
+  scale_fill_gradientn(colors=rev(RColorBrewer::brewer.pal(10, "RdYlBu"))) +
+  scale_y_continuous(expand=c(0.1, 0, 0, 0.1), limits=c(0, 1.1), breaks=c(0, 0.25, 0.5, 0.75, 1)) +
+  theme_minimal() +
+  facet_wrap(vars(Marker), ncol=5) +
+  theme(text=element_text(size=12, face="bold", color="black"), 
+        axis.text=element_text(face="bold", size=14), 
+        axis.title.y=element_text(size=14, margin=margin(t=0, r=12, b=0, l=0)),
+        axis.text.x=element_text(angle=45, hjust=1), 
+        legend.title=element_text(size=12),
+        strip.text=element_text(size=16)) +
+  labs(y="Sigmoid Cell Mean Intensity", x="", fill="Median Intensity")
+```
