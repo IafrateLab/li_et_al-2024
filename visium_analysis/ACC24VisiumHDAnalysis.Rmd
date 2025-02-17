@@ -82,7 +82,7 @@ clusters <- paste0("C", 0:(num_clusters - 1))
 object$seurat_cluster <- factor(paste0("C", object$seurat_cluster), levels=clusters)
 Idents(object) <- "seurat_cluster"
 
-cluster_pal <- c("#0068A9", "#CDA0CB", "#FCA50B", "#35B7CE", "#7AD151", "#C23637", "#E96302", 
+cluster_pal <- c("#0068A9", "#CDA0CB", "#FCA50B", "#7AD151", "#35B7CE", "#C23637", "#E96302", 
                  "#932667", "#92C4E9", "#22A889", "#F5D77E", "lightcoral", "#BBDF70", 
                  "#33BF71", "#FBB874")[1:num_clusters]
 
